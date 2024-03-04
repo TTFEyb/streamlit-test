@@ -12,40 +12,91 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+ # Importing required packagesc
 import streamlit as st
+import time
+from openai import OpenAI
 from streamlit.logger import get_logger
 
 LOGGER = get_logger(__name__)
 
+# Set your OpenAI API key and assistant ID here
+api_key         = st.secrets["openai_apikey"]
+assistant_id    = st.secrets["assistant_id"]
 
-def run():
-    st.set_page_config(
-        page_title="Hello",
-        page_icon="👋",
-    )
+# Set openAi client , assistant ai and assistant ai thread
+@st.cache_resource
+def load_openai_client_and_assistant():
+    client          = OpenAI(api_key=api_key)
+    my_assistant    = client.beta.assistants.retrieve(assistant_id)
+    thread          = client.beta.threads.create()
 
-    st.write("# Welcome to Streamlit! 👋")
+    return client , my_assistant, thread
 
-    st.sidebar.success("Select a demo above.")
+client,  my_assistant, assistant_thread = load_openai_client_and_assistant()
 
-    st.markdown(
-        """
-        Streamlit is an open-source app framework built specifically for
-        Machine Learning and Data Science projects.
-        **👈 Select a demo from the sidebar** to see some examples
-        of what Streamlit can do!
-        ### Want to learn more?
-        - Check out [streamlit.io](https://streamlit.io)
-        - Jump into our [documentation](https://docs.streamlit.io)
-        - Ask a question in our [community
-          forums](https://discuss.streamlit.io)
-        ### See more complex demos
-        - Use a neural net to [analyze the Udacity Self-driving Car Image
-          Dataset](https://github.com/streamlit/demo-self-driving)
-        - Explore a [New York City rideshare dataset](https://github.com/streamlit/demo-uber-nyc-pickups)
-    """
-    )
+# check in loop  if assistant ai parse our request
+def wait_on_run(run, thread):
+    while run.status == "queued" or run.status == "in_progress":
+        run = client.beta.threads.runs.retrieve(
+            thread_id=thread.id,
+            run_id=run.id,
+        )
+        time.sleep(0.5)
+    return run
+
+# initiate assistant ai response
+def get_assistant_response(user_input=""):
+    try:
+        # Create a message
+        message = client.beta.threads.messages.create(
+            thread_id=assistant_thread.id,
+            role="user",
+            content=user_input,
+        )
+        
+        # Create a run
+        run = client.beta.threads.runs.create(
+            thread_id=assistant_thread.id,
+            assistant_id=assistant_id,
+        )
+
+        # Wait for the run to finish
+        run = wait_on_run(run, assistant_thread)
+
+        # Retrieve all the messages added after our last user message
+        messages = client.beta.threads.messages.list(
+            thread_id=assistant_thread.id, order="asc", after=message.id
+        )
+
+        # Check if messages is empty or not
+        if not messages.data:
+            return "No response from the assistant."
+        
+        # Return the content of the latest message
+        return messages.data[0].content[0].text.value
+    
+    except Exception as e:
+        return f"An error occurred: {str(e)}"
 
 
-if __name__ == "__main__":
-    run()
+if 'user_input' not in st.session_state:
+    st.session_state.user_input = ''
+
+def submit():
+    st.session_state.user_input = st.session_state.query
+    st.session_state.query = ''
+
+
+st.title("ChatGPT integration test")
+
+st.text_input("Awaiting input:", key='query', on_change=submit)
+
+user_input = st.session_state.user_input
+
+st.write("You entered: ", user_input)
+
+if user_input:
+    result = get_assistant_response(user_input)
+    st.header('Assistant reply:', divider='rainbow')
+    st.text(result)
